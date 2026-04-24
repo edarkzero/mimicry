@@ -1,0 +1,508 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no">
+    <title>Enemyskin: Last Shape Standing</title>
+    <style>
+        body {
+            margin: 0;
+            overflow: hidden;
+            background: #1a1a1a;
+            font-family: 'Courier New', Courier, monospace;
+            color: white;
+            user-select: none;
+            touch-action: none;
+        }
+        canvas { display: block; }
+
+        /* HUD Styling */
+        #hud {
+            position: absolute;
+            top: 10px;
+            left: 10px;
+            pointer-events: none;
+            text-shadow: 2px 2px 0 #000;
+        }
+        .bar-container {
+            width: 200px;
+            height: 20px;
+            background: #333;
+            border: 2px solid #fff;
+            margin-bottom: 5px;
+        }
+        #health-bar { width: 100%; height: 100%; background: #ff4444; transition: width 0.2s; }
+        #energy-bar { width: 100%; height: 100%; background: #44ff44; transition: width 0.1s; }
+        
+        #form-info { font-weight: bold; font-size: 18px; margin-bottom: 10px; }
+        #inventory { font-size: 12px; color: #aaa; }
+
+        /* Mobile Controls */
+        #mobile-controls {
+            position: absolute;
+            bottom: 20px;
+            width: 100%;
+            display: none;
+            justify-content: space-between;
+            padding: 0 30px;
+            box-sizing: border-box;
+        }
+        .joystick-area {
+            width: 120px;
+            height: 120px;
+            background: rgba(255,255,255,0.2);
+            border-radius: 50%;
+            position: relative;
+        }
+        .stick {
+            width: 50px;
+            height: 50px;
+            background: #fff;
+            border-radius: 50%;
+            position: absolute;
+            top: 35px;
+            left: 35px;
+        }
+        .action-buttons {
+            display: grid;
+            grid-template-columns: 1fr 1fr;
+            gap: 10px;
+        }
+        .btn {
+            width: 60px;
+            height: 60px;
+            background: rgba(255,255,255,0.3);
+            border: 2px solid #fff;
+            border-radius: 50%;
+            display: flex;
+            align-items: center;
+            justify-content: center;
+            font-weight: bold;
+            font-size: 12px;
+        }
+        .btn:active { background: rgba(255,255,255,0.6); }
+    </style>
+</head>
+<body>
+
+    <div id="hud">
+        <div id="form-info">Form: Base Shell</div>
+        Health: <div class="bar-container"><div id="health-bar"></div></div>
+        Energy: <div class="bar-container"><div id="energy-bar"></div></div>
+        <div id="inventory">Captured: None</div>
+        <div id="status-msg" style="color: yellow;"></div>
+    </div>
+
+    <div id="mobile-controls">
+        <div class="joystick-area" id="joy-area"><div class="stick" id="joy-stick"></div></div>
+        <div class="action-buttons">
+            <div class="btn" id="btn-atk">ATK</div>
+            <div class="btn" id="btn-eva">EVA</div>
+            <div class="btn" id="btn-blk">BLK</div>
+            <div class="btn" id="btn-spr">SPR</div>
+        </div>
+    </div>
+
+    <canvas id="gameCanvas"></canvas>
+
+<script>
+/** GAME CONFIGURATION **/
+const FORMS = {
+    'Base Shell': { color: '#ccc', hp: 100, agility: 3, strength: 10, jump: 1, trait: 'None', desc: 'Balanced' },
+    'Duelist': { color: '#44aaff', hp: 80, agility: 5, strength: 15, jump: 1, trait: 'Parry Master', desc: 'Fast & Precise' },
+    'Brute': { color: '#ff4444', hp: 200, agility: 2, strength: 25, jump: 1, trait: 'Heavy Hitter', desc: 'Tanky & Slow' },
+    'Stalker': { color: '#aa44ff', hp: 60, agility: 7, strength: 12, jump: 1, trait: 'Aggressive', desc: 'High Mobility' },
+    'Shade': { color: '#44ffaa', hp: 70, agility: 6, strength: 10, jump: 2, trait: 'Blink', desc: 'Evasive' }
+};
+
+const ENERGY_COSTS = { EVADE: 0.5, PARRY: 0.2, BLOCK: 0.3 };
+
+const canvas = document.getElementById('gameCanvas');
+const ctx = canvas.getContext('2d');
+const hud = {
+    hp: document.getElementById('health-bar'),
+    energy: document.getElementById('energy-bar'),
+    form: document.getElementById('form-info'),
+    inv: document.getElementById('inventory'),
+    msg: document.getElementById('status-msg')
+};
+
+let width, height;
+let player;
+let enemies = [];
+let items = [];
+let camera = { x: 0, y: 0 };
+let keys = {};
+let isMobile = false;
+let wave = 1;
+
+/** ENTITY CLASS **/
+class Entity {
+    constructor(x, y, type, isPlayer = false) {
+        this.x = x;
+        this.y = y;
+        this.type = type;
+        this.isPlayer = isPlayer;
+        this.formName = type;
+        this.form = FORMS[type] || FORMS['Base Shell'];
+        
+        this.hp = this.form.hp;
+        this.maxHp = this.form.hp;
+        this.energy = 1.0;
+        this.maxEnergy = 1.0;
+        
+        this.state = 'idle'; // idle, attacking, blocking, parrying, evading, morphing
+        this.stateTimer = 0;
+        this.target = null;
+        this.radius = 20;
+        this.vx = 0;
+        this.vy = 0;
+    }
+
+    update() {
+        // Energy regeneration
+        this.energy = Math.min(this.maxEnergy, this.energy + 0.005);
+
+        if (this.stateTimer > 0) {
+            this.stateTimer--;
+            if (this.stateTimer <= 0) this.state = 'idle';
+        }
+
+        if (!this.isPlayer) this.updateAI();
+        
+        this.x += this.vx;
+        this.y += this.vy;
+        this.vx *= 0.8;
+        this.vy *= 0.8;
+    }
+
+    updateAI() {
+        if (this.state === 'morphing') return;
+
+        // 1. INFIGHTING: Find nearest target (Player or other Enemies)
+        let closest = null;
+        let minDist = 600;
+        
+        const targets = [player, ...enemies].filter(e => e !== this && e.hp > 0);
+        targets.forEach(t => {
+            const d = Math.hypot(t.x - this.x, t.y - this.y);
+            if (d < minDist) { minDist = d; closest = t; }
+        });
+
+        this.target = closest;
+
+        if (this.target) {
+            const angle = Math.atan2(this.target.y - this.y, this.target.x - this.x);
+            
+            if (minDist > 50) {
+                this.vx += Math.cos(angle) * 0.2;
+                this.vy += Math.sin(angle) * 0.2;
+            } else if (this.state === 'idle') {
+                this.attack();
+            }
+        }
+    }
+
+    attack() {
+        this.state = 'attacking';
+        this.stateTimer = 30;
+        
+        // Check hit
+        const targets = [player, ...enemies].filter(e => e !== this && e.hp > 0);
+        targets.forEach(t => {
+            if (Math.hypot(t.x - this.x, t.y - this.y) < 60) {
+                t.takeDamage(this.form.strength, this);
+            }
+        });
+    }
+
+    takeDamage(amount, attacker) {
+        if (this.state === 'parrying') {
+            hud.msg.innerText = "PARRIED!";
+            attacker.takeDamage(amount * 1.5, this); // Punish attacker
+            this.energy -= ENERGY_COSTS.PARRY;
+            return;
+        }
+        if (this.state === 'blocking') {
+            amount *= 0.3;
+            this.energy -= (ENERGY_COSTS.BLOCK + (attacker.form.strength * 0.005));
+        }
+        if (this.state === 'evading') return;
+
+        this.hp -= amount;
+        if (this.hp <= 0) this.die();
+    }
+
+    die() {
+        if (this.isPlayer) {
+            alert("GAME OVER. Run Reset.");
+            location.reload();
+        }
+    }
+
+    draw() {
+        ctx.save();
+        ctx.translate(this.x - camera.x, this.y - camera.y);
+        
+        // Draw Body
+        ctx.fillStyle = this.form.color;
+        if (this.state === 'morphing') ctx.globalAlpha = 0.5;
+        
+        ctx.beginPath();
+        ctx.arc(0, 0, this.radius, 0, Math.PI * 2);
+        ctx.fill();
+        
+        // Visual indicators
+        if (this.state === 'blocking') {
+            ctx.strokeStyle = 'white';
+            ctx.lineWidth = 3;
+            ctx.strokeRect(-25, -25, 50, 50);
+        }
+        if (this.state === 'attacking') {
+            ctx.strokeStyle = 'yellow';
+            ctx.beginPath();
+            ctx.arc(0, 0, 40, 0, Math.PI * 2);
+            ctx.stroke();
+        }
+        if (this.state === 'parrying') {
+            ctx.strokeStyle = 'cyan';
+            ctx.lineWidth = 5;
+            ctx.strokeRect(-22, -22, 44, 44);
+        }
+
+        ctx.restore();
+    }
+}
+
+/** PLAYER CLASS **/
+class Player extends Entity {
+    constructor(x, y) {
+        super(x, y, 'Base Shell', true);
+        this.capturedForms = [];
+    }
+
+    handleInput() {
+        if (this.state === 'morphing') return;
+
+        let speed = this.form.agility;
+        
+        // Sprinting
+        if (keys['Shift'] && this.energy > 0) {
+            speed *= 1.6;
+            this.energy -= 0.005;
+        }
+
+        if (keys['w']) this.vy -= speed * 0.1;
+        if (keys['s']) this.vy += speed * 0.1;
+        if (keys['a']) this.vx -= speed * 0.1;
+        if (keys['d']) this.vx += speed * 0.1;
+
+        if (keys['j']) this.attack();
+        if (keys['k']) this.evade();
+        if (keys['l']) this.block();
+    }
+
+    attack() {
+        if (this.state !== 'idle') return;
+        this.state = 'attacking';
+        this.stateTimer = 20;
+        enemies.forEach(e => {
+            if (Math.hypot(e.x - this.x, e.y - this.y) < 60) {
+                e.takeDamage(this.form.strength, this);
+            }
+        });
+    }
+
+    evade() {
+        if (this.energy < ENERGY_COSTS.EVADE) return;
+        this.energy -= ENERGY_COSTS.EVADE;
+        this.state = 'evading';
+        this.stateTimer = 15;
+        const angle = Math.atan2(this.vy, this.vx) || 0;
+        this.vx += Math.cos(angle) * 20;
+        this.vy += Math.sin(angle) * 20;
+    }
+
+    block() {
+        if (this.energy < ENERGY_COSTS.BLOCK) return;
+        this.state = 'blocking';
+        this.stateTimer = 20;
+        // Short window for parry
+        setTimeout(() => {
+            if (this.state === 'blocking') this.state = 'parrying';
+        }, 100);
+    }
+
+    morph(formName) {
+        this.state = 'morphing';
+        this.stateTimer = 60; // Vulnerable window
+        setTimeout(() => {
+            this.formName = formName;
+            this.form = FORMS[formName];
+            this.maxHp = this.form.hp;
+            this.hp = this.maxHp;
+            this.state = 'idle';
+        }, 600);
+    }
+}
+
+/** CORE GAME ENGINE **/
+function init() {
+    width = window.innerWidth;
+    height = window.innerHeight;
+    canvas.width = width;
+    canvas.height = height;
+
+    player = new Player(width/2, height/2);
+    
+    if ('ontouchstart' in window) {
+        isMobile = true;
+        document.getElementById('mobile-controls').style.display = 'flex';
+    }
+
+    spawnWave();
+    setInterval(spawnRandomItem, 40000); // Spawn item every 40s
+    requestAnimationFrame(gameLoop);
+}
+
+function spawnWave() {
+    const archetypes = Object.keys(FORMS).filter(f => f !== 'Base Shell');
+    for (let i = 0; i < 3 + wave; i++) {
+        const type = archetypes[Math.floor(Math.random() * archetypes.length)];
+        const angle = Math.random() * Math.PI * 2;
+        const dist = 400 + Math.random() * 400;
+        enemies.push(new Entity(
+            player.x + Math.cos(angle) * dist,
+            player.y + Math.sin(angle) * dist,
+            type
+        ));
+    }
+}
+
+function spawnRandomItem() {
+    const types = ['HP', 'NRG', 'BOTH'];
+    items.push({
+        x: player.x + (Math.random() - 0.5) * 1000,
+        y: player.y + (Math.random() - 0.5) * 1000,
+        type: types[Math.floor(Math.random() * types.length)]
+    });
+}
+
+function gameLoop() {
+    ctx.clearRect(0, 0, width, height);
+    
+    // Update Camera (Player Centered)
+    camera.x = player.x - width/2;
+    camera.y = player.y - height/2;
+
+    // Draw Grid for spatial awareness
+    ctx.strokeStyle = '#333';
+    ctx.beginPath();
+    for(let x = -camera.x % 100; x < width; x += 100) {
+        ctx.moveTo(x, 0); ctx.lineTo(x, height);
+    }
+    for(let y = -camera.y % 100; y < height; y += 100) {
+        ctx.moveTo(0, y); ctx.lineTo(width, y);
+    }
+    ctx.stroke();
+
+    // Player logic
+    player.handleInput();
+    player.update();
+    player.draw();
+
+    // Enemies logic
+    enemies = enemies.filter(e => {
+        if (e.hp <= 0) {
+            if (!player.capturedForms.includes(e.type)) {
+                player.capturedForms.push(e.type);
+            }
+            return false;
+        }
+        e.update();
+        e.draw();
+        return true;
+    });
+
+    // Items logic
+    items = items.filter(it => {
+        ctx.fillStyle = 'yellow';
+        ctx.beginPath();
+        ctx.arc(it.x - camera.x, it.y - camera.y, 8, 0, Math.PI*2);
+        ctx.fill();
+        
+        if (Math.hypot(player.x - it.x, player.y - it.y) < 30) {
+            if (it.type === 'HP' || it.type === 'BOTH') player.hp = Math.min(player.maxHp, player.hp + 30);
+            if (it.type === 'NRG' || it.type === 'BOTH') player.energy = Math.min(player.maxEnergy, player.energy + 0.5);
+            return false;
+        }
+        return true;
+    });
+
+    if (enemies.length === 0) {
+        wave++;
+        spawnWave();
+    }
+
+    updateHUD();
+    requestAnimationFrame(gameLoop);
+}
+
+function updateHUD() {
+    hud.hp.style.width = (player.hp / player.maxHp * 100) + "%";
+    hud.energy.style.width = (player.energy / player.maxEnergy * 100) + "%";
+    hud.form.innerText = `Form: ${player.formName}`;
+    hud.inv.innerText = `Captured: ${player.capturedForms.join(', ') || 'None'}`;
+}
+
+/** INPUT HANDLING **/
+window.addEventListener('keydown', e => {
+    keys[e.key.toLowerCase()] = true;
+    // Morphing keys 1-5
+    if (player.capturedForms[e.key - 1]) {
+        player.morph(player.capturedForms[e.key - 1]);
+    }
+});
+window.addEventListener('keyup', e => keys[e.key.toLowerCase()] = false);
+
+// Mobile Key Mapping
+if (isMobile) {
+    const bindBtn = (id, key) => {
+        const btn = document.getElementById(id);
+        btn.ontouchstart = (e) => { e.preventDefault(); keys[key] = true; };
+        btn.ontouchend = (e) => { e.preventDefault(); keys[key] = false; };
+    };
+    bindBtn('btn-atk', 'j');
+    bindBtn('btn-eva', 'k');
+    bindBtn('btn-blk', 'l');
+    bindBtn('btn-spr', 'shift');
+
+    // Simple Joystick
+    const joyArea = document.getElementById('joy-area');
+    const joyStick = document.getElementById('joy-stick');
+    joyArea.ontouchmove = (e) => {
+        e.preventDefault();
+        const touch = e.touches[0];
+        const rect = joyArea.getBoundingClientRect();
+        const centerX = rect.left + rect.width/2;
+        const centerY = rect.top + rect.height/2;
+        const dx = touch.clientX - centerX;
+        const dy = touch.clientY - centerY;
+        
+        joyStick.style.transform = `translate(${dx/2}px, ${dy/2}px)`;
+        
+        keys['w'] = dy < -20;
+        keys['s'] = dy > 20;
+        keys['a'] = dx < -20;
+        keys['d'] = dx > 20;
+    };
+    joyArea.ontouchend = () => {
+        joyStick.style.transform = `translate(0,0)`;
+        keys['w'] = keys['s'] = keys['a'] = keys['d'] = false;
+    };
+}
+
+init();
+</script>
+</body>
+</html>
