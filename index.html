@@ -7,7 +7,7 @@
   <link rel="stylesheet" href="styles.css">
 </head>
 <body>
-  <div class="shell">
+  <div class="shell" id="gameShell">
     <header class="masthead">
       <div>
         <p class="eyebrow">Morph-Roguelite Arena Prototype</p>
@@ -20,6 +20,10 @@
     <main class="layout">
       <section class="arena-panel">
         <div class="arena-frame">
+          <div class="display-dock">
+            <button class="display-btn" id="fullscreenButton" type="button">Fullscreen</button>
+            <button class="display-btn" id="canvasOnlyButton" type="button">Canvas Only</button>
+          </div>
           <canvas id="gameCanvas" width="1280" height="720"></canvas>
           <div class="overlay hidden" id="deathOverlay">
             <h2>You shattered.</h2>
@@ -145,6 +149,7 @@
             <li><strong>Block / Parry:</strong> Right click or Shift</li>
             <li><strong>Evade:</strong> Space</li>
             <li><strong>Sprint:</strong> C or Ctrl</li>
+            <li><strong>Display:</strong> O fullscreen, P canvas only</li>
             <li><strong>Restart Run:</strong> R after death</li>
           </ul>
         </section>

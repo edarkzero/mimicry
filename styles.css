@@ -97,6 +97,12 @@ body {
 .arena-panel,
 .hud-panel {
   min-width: 0;
+  min-height: 0;
+}
+
+.arena-panel {
+  display: flex;
+  flex-direction: column;
 }
 
 .arena-frame,
@@ -115,6 +121,34 @@ body {
 
 .arena-frame {
   overflow: hidden;
+}
+
+.display-dock {
+  position: absolute;
+  top: 14px;
+  right: 14px;
+  z-index: 4;
+  display: flex;
+  gap: 8px;
+}
+
+.display-btn {
+  padding: 10px 14px;
+  border: 1px solid rgba(255, 255, 255, 0.16);
+  border-radius: 999px;
+  background: rgba(7, 14, 25, 0.78);
+  color: var(--text);
+  font-family: inherit;
+  font-size: 0.8rem;
+  letter-spacing: 0.08em;
+  text-transform: uppercase;
+  cursor: pointer;
+}
+
+.display-btn.active {
+  border-color: rgba(255, 208, 131, 0.44);
+  background: rgba(255, 208, 131, 0.18);
+  color: #fff3c5;
 }
 
 #gameCanvas {
@@ -506,6 +540,92 @@ body.mobile-mode .mobile-controls {
   display: flex;
 }
 
+.shell.is-fullscreen,
+.shell:fullscreen {
+  width: 100vw;
+  max-width: none;
+  height: 100vh;
+  padding: 12px;
+}
+
+.shell.is-fullscreen .layout,
+.shell:fullscreen .layout {
+  height: calc(100vh - 122px);
+  align-items: stretch;
+}
+
+.shell.is-fullscreen .arena-frame,
+.shell:fullscreen .arena-frame {
+  flex: 1;
+  min-height: 0;
+}
+
+.shell.is-fullscreen .hud-panel,
+.shell:fullscreen .hud-panel {
+  overflow-y: auto;
+  align-content: start;
+}
+
+.shell.is-fullscreen #gameCanvas,
+.shell:fullscreen #gameCanvas {
+  height: 100%;
+  aspect-ratio: auto;
+}
+
+body.canvas-only-mode {
+  overflow: hidden;
+}
+
+body.canvas-only-mode .masthead,
+body.canvas-only-mode .legend-strip,
+body.canvas-only-mode .hud-panel {
+  display: none;
+}
+
+body.canvas-only-mode .shell {
+  width: min(100vw - 8px, 100%);
+  padding: 4px;
+}
+
+body.canvas-only-mode .layout {
+  grid-template-columns: 1fr;
+}
+
+body.canvas-only-mode .arena-panel {
+  min-height: calc(100vh - 8px);
+}
+
+body.canvas-only-mode .arena-frame {
+  flex: 1;
+  min-height: 0;
+}
+
+body.canvas-only-mode #gameCanvas {
+  height: 100%;
+  aspect-ratio: auto;
+}
+
+body.canvas-only-mode .shell.is-fullscreen,
+body.canvas-only-mode .shell:fullscreen {
+  padding: 0;
+}
+
+body.canvas-only-mode .shell.is-fullscreen .layout,
+body.canvas-only-mode .shell:fullscreen .layout {
+  height: 100vh;
+}
+
+body.canvas-only-mode .shell.is-fullscreen .arena-panel,
+body.canvas-only-mode .shell:fullscreen .arena-panel {
+  min-height: 100vh;
+}
+
+body.canvas-only-mode .shell.is-fullscreen .arena-frame,
+body.canvas-only-mode .shell:fullscreen .arena-frame {
+  border-radius: 0;
+  border: 0;
+}
+
 @media (max-width: 1120px) {
   .layout {
     grid-template-columns: 1fr;
@@ -561,5 +681,16 @@ body.mobile-mode .mobile-controls {
 
   .touch-actions {
     grid-template-columns: repeat(2, minmax(0, 78px));
+  }
+
+  .display-dock {
+    top: 10px;
+    right: 10px;
+    gap: 6px;
+  }
+
+  .display-btn {
+    padding: 8px 11px;
+    font-size: 0.72rem;
   }
 }

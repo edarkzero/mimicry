@@ -4,6 +4,7 @@ const canvas = document.getElementById("gameCanvas");
 const ctx = canvas.getContext("2d");
 
 const ui = {
+  shell: document.getElementById("gameShell"),
   runState: document.getElementById("runState"),
   waveLabel: document.getElementById("waveLabel"),
   enemiesLabel: document.getElementById("enemiesLabel"),
@@ -25,6 +26,8 @@ const ui = {
   banner: document.getElementById("messageBanner"),
   mobileControls: document.getElementById("mobileControls"),
   restartButton: document.getElementById("restartButton"),
+  fullscreenButton: document.getElementById("fullscreenButton"),
+  canvasOnlyButton: document.getElementById("canvasOnlyButton"),
 };
 
 const statFields = {
@@ -214,6 +217,9 @@ const input = {
 
 let essenceCounter = 0;
 let game = null;
+const displayState = {
+  canvasOnly: false,
+};
 
 function clamp(min, value, max) {
   return Math.max(min, Math.min(value, max));
@@ -277,7 +283,11 @@ function resetWorldBounds() {
 }
 
 function randomDropDelay() {
-  return rand(30, 120);
+  const wave = game ? game.wave : 1;
+  const intensity = clamp(0, (wave - 1) / 12, 1);
+  const minDelay = lerp(24, 52, intensity);
+  const maxDelay = lerp(60, 120, intensity);
+  return rand(minDelay, maxDelay);
 }
 
 function spendEnergy(entity, fraction) {
@@ -376,6 +386,69 @@ function computeEssencePower(essence) {
   return Number((average * essence.scale + bonus).toFixed(1));
 }
 
+function getWaveProfile(wave) {
+  if (wave % 5 === 0) {
+    return {
+      kind: "boss",
+      count: 1,
+      scaleBoost: 0.85,
+      label: `Boss Wave ${wave}`,
+      banner: `Boss wave ${wave}. A champion enters the field.`,
+      log: `Boss wave ${wave} begins. A champion stalks the arena.`,
+    };
+  }
+
+  if (wave % 3 === 0) {
+    return {
+      kind: "elite",
+      count: Math.min(6, 2 + Math.floor(wave / 6)),
+      scaleBoost: 0.45,
+      label: `Elite Wave ${wave}`,
+      banner: `Elite wave ${wave}. Dangerous hunters arrive.`,
+      log: `Elite wave ${wave} begins. Enhanced enemies enter the fight.`,
+    };
+  }
+
+  return {
+    kind: "normal",
+    count: Math.min(18, 4 + wave * 2),
+    scaleBoost: 0,
+    label: `Wave ${wave}`,
+    banner: `Wave ${wave} repopulates. Threat ${getThreatLevel().toFixed(1)}x`,
+    log: `Wave ${wave} repopulates the arena.`,
+  };
+}
+
+function applyVariantToEssence(essence, variant, wave) {
+  essence.variant = variant;
+  essence.variantLabel = variant === "boss" ? "Boss" : variant === "elite" ? "Elite" : "Normal";
+
+  if (variant === "elite") {
+    for (const key of STAT_KEYS) {
+      essence.stats[key] = clamp(1, essence.stats[key] + (key === "strength" || key === "guard" ? 2 : 1), MAX_STAT + 3);
+    }
+    essence.scale = Number((essence.scale + 0.34 + Math.min(0.18, wave * 0.01)).toFixed(2));
+    essence.name = `Elite ${essence.name}`;
+    essence.tags.push("Elite");
+    essence.palette.accent = "#ffd27c";
+    essence.palette.trail = "#ffe4a6";
+  } else if (variant === "boss") {
+    for (const key of STAT_KEYS) {
+      essence.stats[key] = clamp(1, essence.stats[key] + (key === "strength" || key === "guard" ? 3 : 2), MAX_STAT + 4);
+    }
+    essence.scale = Number((essence.scale + 0.72 + Math.min(0.28, wave * 0.014)).toFixed(2));
+    essence.name = `${essence.name} Prime`;
+    essence.tags.push("Boss");
+    essence.palette.accent = "#ff9c7c";
+    essence.palette.trail = "#ffd0a3";
+  } else {
+    essence.palette.accent = essence.palette.accent;
+  }
+
+  essence.power = computeEssencePower(essence);
+  return essence;
+}
+
 function deriveCombat(essence) {
   const stats = essence.stats;
   const scale = essence.scale || 1;
@@ -426,7 +499,7 @@ function deriveCombat(essence) {
   return derived;
 }
 
-function createEnemyEssence(scale, wave) {
+function createEnemyEssence(scale, wave, options = {}) {
   const archetype = pick(ARCHETYPES);
   const mutation = pick(MUTATIONS);
   const stats = {};
@@ -454,8 +527,7 @@ function createEnemyEssence(scale, wave) {
     scale: Number(scale.toFixed(2)),
     ai: { ...archetype.ai },
   };
-  essence.power = computeEssencePower(essence);
-  return essence;
+  return applyVariantToEssence(essence, options.variant || "normal", wave);
 }
 
 function createEntity(team, essence, x, y) {
@@ -519,6 +591,10 @@ function applyEssence(entity, essence, refill) {
 }
 
 function getThreatLevel() {
+  if (!game || !game.forms || !game.forms.length) {
+    return 1;
+  }
+
   const bestPower = Math.max(...game.forms.map((essence) => essence.power));
   return 1 + (game.wave - 1) * 0.16 + (game.forms.length - 1) * 0.08 + Math.max(0, bestPower - 6) * 0.045;
 }
@@ -569,13 +645,15 @@ function randomPickupType() {
 }
 
 function findPickupSpawnPoint() {
-  for (let attempts = 0; attempts < 140; attempts += 1) {
-    const x = rand(WORLD.left + 150, WORLD.right - 150);
-    const y = rand(WORLD.top + 150, WORLD.bottom - 150);
+  const anchor = game.player;
+  const minDistance = 120;
+  const maxDistance = 260 + Math.min(120, game.wave * 10);
 
-    if (magnitude(x - game.player.x, y - game.player.y) < 250) {
-      continue;
-    }
+  for (let attempts = 0; attempts < 140; attempts += 1) {
+    const angle = rand(0, TAU);
+    const distance = rand(minDistance, maxDistance);
+    const x = clamp(WORLD.left + 120, anchor.x + Math.cos(angle) * distance, WORLD.right - 120);
+    const y = clamp(WORLD.top + 120, anchor.y + Math.sin(angle) * distance, WORLD.bottom - 120);
 
     let blocked = false;
     for (const pickup of game.pickups) {
@@ -601,7 +679,10 @@ function findPickupSpawnPoint() {
     return { x, y };
   }
 
-  return null;
+  return {
+    x: clamp(WORLD.left + 120, anchor.x + rand(-180, 180), WORLD.right - 120),
+    y: clamp(WORLD.top + 120, anchor.y + rand(-180, 180), WORLD.bottom - 120),
+  };
 }
 
 function spawnPickup() {
@@ -750,9 +831,12 @@ function startRun() {
     nextWaveTimer: null,
     nextPickupTimer: randomDropDelay(),
     kills: 0,
+    currentWaveProfile: null,
     camera: { x: player.x, y: player.y, shake: 0 },
     uiRefresh: 0,
   };
+
+  game.currentWaveProfile = getWaveProfile(game.wave);
 
   ui.deathOverlay.classList.add("hidden");
   ui.runState.textContent = "RUN ACTIVE";
@@ -763,12 +847,14 @@ function startRun() {
 }
 
 function spawnWave() {
-  const count = Math.min(18, 4 + game.wave * 2);
-  const threat = getThreatLevel();
+  const profile = getWaveProfile(game.wave);
+  const count = profile.count;
+  const threat = getThreatLevel() + profile.scaleBoost;
+  game.currentWaveProfile = profile;
 
   for (let i = 0; i < count; i += 1) {
     const spawn = randomSpawnPoint();
-    const essence = createEnemyEssence(threat + rand(-0.12, 0.22), game.wave);
+    const essence = createEnemyEssence(threat + rand(-0.12, 0.22), game.wave, { variant: profile.kind });
     const enemy = createEntity("enemy", essence, spawn.x, spawn.y);
     enemy.facing = Math.atan2(game.player.y - enemy.y, game.player.x - enemy.x);
     enemy.desiredFacing = enemy.facing;
@@ -776,8 +862,8 @@ function spawnWave() {
     spawnBurst(enemy.x, enemy.y, enemy.essence.palette.trail, 8, 60, 0.55, 4);
   }
 
-  addLog(`Wave ${game.wave} repopulates the arena with ${count} enemies.`);
-  showBanner(`Wave ${game.wave} repopulates. Threat ${getThreatLevel().toFixed(1)}x`);
+  addLog(`${profile.log} Count ${count}.`);
+  showBanner(profile.banner);
 }
 
 function queueMorph(direction) {
@@ -1070,6 +1156,10 @@ function handleDeath(target, source) {
     if (source === game.player) {
       game.kills += 1;
       unlockEssence(target.essence);
+      game.player.hp = game.player.maxHp;
+      spawnText(game.player.x, game.player.y - game.player.radius - 12, "FULL HEAL", "#ffdca8");
+      spawnBurst(game.player.x, game.player.y, "#ffdca8", 16, 120, 0.65, 5);
+      addLog("Finisher secured. Health fully restored.");
     }
     game.enemies = game.enemies.filter((enemy) => enemy !== target);
   } else {
@@ -1463,7 +1553,7 @@ function refreshHud() {
   ui.powerLabel.textContent = essence.power.toFixed(1);
 
   for (const key of STAT_KEYS) {
-    statFields[key].fill.style.width = `${(essence.stats[key] / MAX_STAT) * 100}%`;
+    statFields[key].fill.style.width = `${clamp(0, essence.stats[key] / MAX_STAT, 1) * 100}%`;
     statFields[key].value.textContent = String(essence.stats[key]);
   }
 
@@ -1636,15 +1726,23 @@ function drawHealthBar(entity) {
   const height = 6;
   const x = entity.x - width / 2;
   const y = entity.y - entity.radius - 18;
+  const hpColor = entity.team === "player"
+    ? "#ffd083"
+    : entity.essence.variant === "boss"
+      ? "#ff9c7c"
+      : entity.essence.variant === "elite"
+        ? "#ffd27c"
+        : "#ff756b";
+  const energyColor = entity.essence.variant === "boss" ? "#ffe3a8" : "#7fe1f5";
 
   ctx.fillStyle = "rgba(0, 0, 0, 0.45)";
   ctx.fillRect(x, y, width, height);
-  ctx.fillStyle = entity.team === "player" ? "#ffd083" : "#ff756b";
+  ctx.fillStyle = hpColor;
   ctx.fillRect(x, y, width * clamp(0, entity.hp / entity.maxHp, 1), height);
 
   ctx.fillStyle = "rgba(0, 0, 0, 0.35)";
   ctx.fillRect(x, y + height + 2, width, 4);
-  ctx.fillStyle = "#7fe1f5";
+  ctx.fillStyle = energyColor;
   ctx.fillRect(x, y + height + 2, width * clamp(0, entity.energy / entity.maxEnergy, 1), 4);
 }
 
@@ -1783,6 +1881,33 @@ function drawEntity(entity) {
     ctx.stroke();
   }
 
+  if (entity.team === "enemy" && entity.essence.variant === "elite") {
+    ctx.strokeStyle = "rgba(255, 210, 124, 0.92)";
+    ctx.lineWidth = 2.5;
+    ctx.beginPath();
+    ctx.arc(0, 0, entity.radius + 10, 0, TAU);
+    ctx.stroke();
+  }
+
+  if (entity.team === "enemy" && entity.essence.variant === "boss") {
+    ctx.strokeStyle = "rgba(255, 156, 124, 0.96)";
+    ctx.lineWidth = 3;
+    ctx.beginPath();
+    for (let i = 0; i < 5; i += 1) {
+      const angle = -Math.PI / 2 + (i / 5) * TAU;
+      const radius = i % 2 === 0 ? entity.radius + 13 : entity.radius + 7;
+      const px = Math.cos(angle) * radius;
+      const py = Math.sin(angle) * radius;
+      if (i === 0) {
+        ctx.moveTo(px, py);
+      } else {
+        ctx.lineTo(px, py);
+      }
+    }
+    ctx.closePath();
+    ctx.stroke();
+  }
+
   if (entity.team === "player") {
     ctx.strokeStyle = "rgba(255, 242, 188, 0.8)";
     ctx.lineWidth = 2;
@@ -1872,6 +1997,14 @@ function frame(now) {
 function handleKeyDown(event) {
   input.keys.add(event.code);
 
+  if (event.code === "KeyO") {
+    event.preventDefault();
+    toggleFullscreenMode();
+  }
+  if (event.code === "KeyP") {
+    event.preventDefault();
+    toggleCanvasOnlyMode();
+  }
   if (event.code === "KeyF") {
     input.attackQueued = true;
   }
@@ -1908,6 +2041,61 @@ function syncHeldActions() {
     input.keys.has("ControlLeft") ||
     input.keys.has("ControlRight") ||
     input.touchSprintHeld;
+}
+
+function updateDisplayButtons() {
+  const fullscreenActive = document.fullscreenElement === ui.shell;
+  ui.shell.classList.toggle("is-fullscreen", fullscreenActive);
+  ui.fullscreenButton.textContent = fullscreenActive ? "Exit Fullscreen" : "Fullscreen";
+  ui.canvasOnlyButton.textContent = displayState.canvasOnly ? "Show GUI" : "Canvas Only";
+  ui.fullscreenButton.classList.toggle("active", fullscreenActive);
+  ui.canvasOnlyButton.classList.toggle("active", displayState.canvasOnly);
+  ui.fullscreenButton.setAttribute("aria-pressed", String(fullscreenActive));
+  ui.canvasOnlyButton.setAttribute("aria-pressed", String(displayState.canvasOnly));
+}
+
+function setCanvasOnlyMode(enabled) {
+  displayState.canvasOnly = enabled;
+  document.body.classList.toggle("canvas-only-mode", enabled);
+  resizeCanvas();
+  updateDisplayButtons();
+}
+
+async function requestGameFullscreen() {
+  if (!ui.shell.requestFullscreen || document.fullscreenElement === ui.shell) {
+    return;
+  }
+
+  try {
+    await ui.shell.requestFullscreen();
+  } catch (error) {
+    if (game) {
+      addLog("Fullscreen request was blocked by the browser.");
+    }
+  }
+}
+
+async function toggleFullscreenMode() {
+  if (document.fullscreenElement === ui.shell) {
+    await document.exitFullscreen();
+  } else {
+    await requestGameFullscreen();
+  }
+
+  resizeCanvas();
+  updateDisplayButtons();
+}
+
+async function toggleCanvasOnlyMode() {
+  const nextState = !displayState.canvasOnly;
+  setCanvasOnlyMode(nextState);
+
+  if (nextState && document.fullscreenElement !== ui.shell) {
+    await requestGameFullscreen();
+  }
+
+  resizeCanvas();
+  updateDisplayButtons();
 }
 
 function updateMobileMode() {
@@ -2047,13 +2235,30 @@ function installInput() {
   }
 
   ui.restartButton.addEventListener("click", () => startRun());
+  ui.fullscreenButton.addEventListener("click", () => {
+    toggleFullscreenMode();
+  });
+  ui.canvasOnlyButton.addEventListener("click", () => {
+    toggleCanvasOnlyMode();
+  });
+
+  document.addEventListener("fullscreenchange", () => {
+    if (document.fullscreenElement !== ui.shell && displayState.canvasOnly) {
+      setCanvasOnlyMode(false);
+    } else {
+      updateDisplayButtons();
+      resizeCanvas();
+    }
+  });
 
   window.addEventListener("resize", () => {
     resizeCanvas();
     updateMobileMode();
+    updateDisplayButtons();
   });
 
   updateMobileMode();
+  updateDisplayButtons();
 }
 
 installInput();
