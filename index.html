@@ -1,0 +1,137 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>Enemyskin: Last Shape Standing</title>
+  <link rel="stylesheet" href="styles.css">
+</head>
+<body>
+  <div class="shell">
+    <header class="masthead">
+      <div>
+        <p class="eyebrow">Morph-Roguelite Arena Prototype</p>
+        <h1>Enemyskin: Last Shape Standing</h1>
+        <p class="tagline">Defeat a creature, steal its essence, and risk a vulnerable metamorph to keep the run alive.</p>
+      </div>
+      <div class="status-pill" id="runState">RUN ACTIVE</div>
+    </header>
+
+    <main class="layout">
+      <section class="arena-panel">
+        <div class="arena-frame">
+          <canvas id="gameCanvas" width="1280" height="720"></canvas>
+          <div class="overlay hidden" id="deathOverlay">
+            <h2>You shattered.</h2>
+            <p>Your collected essences are gone. Press <strong>R</strong> to begin a new run.</p>
+          </div>
+          <div class="banner hidden" id="messageBanner"></div>
+        </div>
+
+        <div class="legend-strip">
+          <div class="legend-item">
+            <span class="legend-label">Wave</span>
+            <strong id="waveLabel">1</strong>
+          </div>
+          <div class="legend-item">
+            <span class="legend-label">Enemies</span>
+            <strong id="enemiesLabel">0</strong>
+          </div>
+          <div class="legend-item">
+            <span class="legend-label">Threat</span>
+            <strong id="threatLabel">1.0x</strong>
+          </div>
+          <div class="legend-item">
+            <span class="legend-label">Essences</span>
+            <strong id="essenceCountLabel">1</strong>
+          </div>
+          <div class="legend-item">
+            <span class="legend-label">Defeats</span>
+            <strong id="killsLabel">0</strong>
+          </div>
+        </div>
+      </section>
+
+      <aside class="hud-panel">
+        <section class="card">
+          <div class="section-head">
+            <h2>Current Essence</h2>
+            <div class="power-chip">Power <span id="powerLabel">5.0</span></div>
+          </div>
+
+          <div class="health-shell">
+            <div class="health-bar">
+              <div class="health-fill" id="hpFill"></div>
+            </div>
+            <div class="health-text" id="hpText">100 / 100</div>
+          </div>
+
+          <h3 class="essence-name" id="essenceName">Runebound Drifter</h3>
+          <p class="essence-tags" id="essenceTags">Human / Starter / Balanced</p>
+          <p class="special-name" id="specialName">Blank Core</p>
+          <p class="special-text" id="specialText">A balanced shell with no mutation yet. Steal stronger bodies to evolve.</p>
+
+          <div class="stat-list">
+            <div class="stat-row">
+              <span class="stat-name">Strength</span>
+              <div class="stat-meter"><div class="stat-fill" id="strengthFill"></div></div>
+              <span class="stat-value" id="strengthValue">5</span>
+            </div>
+            <div class="stat-row">
+              <span class="stat-name">Agility</span>
+              <div class="stat-meter"><div class="stat-fill" id="agilityFill"></div></div>
+              <span class="stat-value" id="agilityValue">5</span>
+            </div>
+            <div class="stat-row">
+              <span class="stat-name">Mobility</span>
+              <div class="stat-meter"><div class="stat-fill" id="mobilityFill"></div></div>
+              <span class="stat-value" id="mobilityValue">5</span>
+            </div>
+            <div class="stat-row">
+              <span class="stat-name">Jump</span>
+              <div class="stat-meter"><div class="stat-fill" id="jumpFill"></div></div>
+              <span class="stat-value" id="jumpValue">4</span>
+            </div>
+            <div class="stat-row">
+              <span class="stat-name">Guard</span>
+              <div class="stat-meter"><div class="stat-fill" id="guardFill"></div></div>
+              <span class="stat-value" id="guardValue">5</span>
+            </div>
+          </div>
+        </section>
+
+        <section class="card">
+          <div class="section-head">
+            <h2>Captured Essences</h2>
+            <span class="microcopy">Q / E or mouse wheel</span>
+          </div>
+          <div class="morph-list" id="morphList"></div>
+          <p class="warning-copy">Morphing takes time and leaves you vulnerable until the animation finishes.</p>
+        </section>
+
+        <section class="card">
+          <h2>Combat Flow</h2>
+          <ul class="controls-list">
+            <li><strong>Move:</strong> WASD</li>
+            <li><strong>Aim:</strong> Mouse</li>
+            <li><strong>Attack:</strong> Left click or F</li>
+            <li><strong>Block / Parry:</strong> Right click or Shift</li>
+            <li><strong>Evade:</strong> Space</li>
+            <li><strong>Restart Run:</strong> R after death</li>
+          </ul>
+        </section>
+
+        <section class="card">
+          <div class="section-head">
+            <h2>Combat Log</h2>
+            <span class="microcopy">Latest events</span>
+          </div>
+          <div class="log" id="log"></div>
+        </section>
+      </aside>
+    </main>
+  </div>
+
+  <script src="game.js"></script>
+</body>
+</html>

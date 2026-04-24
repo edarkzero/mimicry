@@ -1,0 +1,316 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Mimicry Prototype</title>
+    <style>
+        body {
+            margin: 0;
+            background: #1a1a1a;
+            color: white;
+            font-family: 'Courier New', Courier, monospace;
+            overflow: hidden;
+            display: flex;
+            justify-content: center;
+            align-items: center;
+            height: 100vh;
+        }
+        #ui {
+            position: absolute;
+            top: 20px;
+            left: 20px;
+            pointer-events: none;
+        }
+        #form-list {
+            position: absolute;
+            bottom: 20px;
+            left: 50%;
+            transform: translateX(-50%);
+            display: flex;
+            gap: 10px;
+            background: rgba(0,0,0,0.5);
+            padding: 10px;
+            border-radius: 10px;
+        }
+        .form-slot {
+            width: 50px;
+            height: 50px;
+            border: 2px solid #555;
+            display: flex;
+            justify-content: center;
+            align-items: center;
+            font-weight: bold;
+            cursor: pointer;
+            position: relative;
+        }
+        .form-slot.active { border-color: #fff; box-shadow: 0 0 10px #fff; }
+        .form-slot span { position: absolute; bottom: -20px; font-size: 10px; }
+        canvas {
+            background: #222;
+            box-shadow: 0 0 20px rgba(0,0,0,0.5);
+            border: 2px solid #444;
+        }
+        .vulnerable { color: #ff4444; font-weight: bold; animation: blink 0.2s infinite; }
+        @keyframes blink { 0% { opacity: 1; } 50% { opacity: 0; } 100% { opacity: 1; } }
+    </style>
+</head>
+<body>
+
+    <div id="ui">
+        <div>HP: <span id="hp">100</span></div>
+        <div id="status">Status: Normal</div>
+        <div style="margin-top: 10px; font-size: 12px;">
+            WASD: Move | SPACE: Attack | SHIFT: Parry/Block | 1-5: Quick Swap
+        </div>
+    </div>
+
+    <div id="form-list"></div>
+
+    <canvas id="gameCanvas"></canvas>
+
+<script>
+    const canvas = document.getElementById('gameCanvas');
+    const ctx = canvas.getContext('2d');
+    const hpDisplay = document.getElementById('hp');
+    const statusDisplay = document.getElementById('status');
+    const formListDiv = document.getElementById('form-list');
+
+    canvas.width = 800;
+    canvas.height = 600;
+
+    const KEYS = {};
+    window.addEventListener('keydown', e => KEYS[e.code] = true);
+    window.addEventListener('keyup', e => KEYS[e.code] = false);
+
+    // --- Game Constants ---
+    const BASE_STATS = { speed: 3, power: 10, radius: 15, color: '#ffffff' };
+    const MORPH_TIME = 1000; // 1 second vulnerability
+
+    class Entity {
+        constructor(x, y, stats) {
+            this.x = x;
+            this.y = y;
+            this.stats = { ...stats };
+            this.hp = 100;
+            this.maxHp = 100;
+            this.vx = 0;
+            this.vy = 0;
+        }
+
+        draw() {
+            ctx.beginPath();
+            ctx.arc(this.x, this.y, this.stats.radius, 0, Math.PI * 2);
+            ctx.fillStyle = this.stats.color;
+            ctx.fill();
+            ctx.closePath();
+            
+            // HP Bar
+            ctx.fillStyle = 'red';
+            ctx.fillRect(this.x - 15, this.y - 25, 30, 4);
+            ctx.fillStyle = 'lime';
+            ctx.fillRect(this.x - 15, this.y - 25, (this.hp / this.maxHp) * 30, 4);
+        }
+    }
+
+    class Player extends Entity {
+        constructor(x, y) {
+            super(x, y, BASE_STATS);
+            this.forms = [BASE_STATS];
+            this.currentFormIndex = 0;
+            this.isMorphing = false;
+            this.isBlocking = false;
+            this.attackCooldown = 0;
+        }
+
+        update() {
+            if (this.isMorphing) return;
+
+            this.isBlocking = KEYS['ShiftLeft'];
+            
+            // Movement
+            let mx = 0, my = 0;
+            if (KEYS['KeyW']) my -= 1;
+            if (KEYS['KeyS']) my += 1;
+            if (KEYS['KeyA']) mx -= 1;
+            if (KEYS['KeyD']) mx += 1;
+
+            const mag = Math.sqrt(mx*mx + my*my);
+            if (mag > 0) {
+                this.x += (mx / mag) * this.stats.speed;
+                this.y += (my / mag) * this.stats.speed;
+            }
+
+            if (this.attackCooldown > 0) this.attackCooldown--;
+            
+            // Quick Swap Keys 1-5
+            for(let i=0; i<5; i++) {
+                if(KEYS[`Digit${i+1}`] && this.forms[i]) this.morphTo(i);
+            }
+        }
+
+        morphTo(index) {
+            if (index === this.currentFormIndex || this.isMorphing) return;
+            this.isMorphing = true;
+            statusDisplay.innerHTML = 'Status: <span class="vulnerable">MORPHING...</span>';
+            
+            setTimeout(() => {
+                this.currentFormIndex = index;
+                this.stats = { ...this.forms[index] };
+                this.isMorphing = false;
+                statusDisplay.innerText = 'Status: Normal';
+                updateFormUI();
+            }, MORPH_TIME);
+        }
+
+        attack(enemies) {
+            if (this.attackCooldown > 0 || this.isMorphing) return;
+            
+            this.attackCooldown = 20;
+            enemies.forEach(en => {
+                const dist = Math.hypot(en.x - this.x, en.y - this.y);
+                if (dist < this.stats.radius + en.stats.radius + 10) {
+                    en.takeDamage(this.stats.power);
+                }
+            });
+        }
+    }
+
+    class Enemy extends Entity {
+        constructor(x, y, level) {
+            // Procedural Stat Generation
+            const randomColor = `hsl(${Math.random() * 360}, 70%, 50%)`;
+            const stats = {
+                speed: 1 + Math.random() * 2 * (level * 0.5),
+                power: 5 + Math.random() * 15 * (level * 0.5),
+                radius: 10 + Math.random() * 15,
+                color: randomColor
+            };
+            super(x, y, stats);
+            this.maxHp = 50 + (level * 20);
+            this.hp = this.maxHp;
+            this.level = level;
+        }
+
+        update(player) {
+            const dx = player.x - this.x;
+            const dy = player.y - this.y;
+            const dist = Math.hypot(dx, dy);
+            
+            // Simple AI: Follow player
+            this.x += (dx / dist) * this.stats.speed;
+            this.y += (dy / dist) * this.stats.speed;
+
+            // Attack player
+            if (dist < this.stats.radius + player.stats.radius) {
+                player.takeDamage(this.stats.power);
+            }
+        }
+
+        takeDamage(dmg) {
+            this.hp -= dmg;
+        }
+    }
+
+    class Essence {
+        constructor(x, y, stats) {
+            this.x = x; this.y = y; this.stats = stats;
+            this.radius = 6;
+        }
+        draw() {
+            ctx.beginPath();
+            ctx.arc(this.x, this.y, this.radius, 0, Math.PI * 2);
+            ctx.fillStyle = this.stats.color;
+            ctx.fill();
+            ctx.strokeStyle = 'white';
+            ctx.stroke();
+            ctx.closePath();
+        }
+    }
+
+    // --- Game State ---
+    const player = new Player(400, 300);
+    let enemies = [];
+    let essences = [];
+    let waveLevel = 1;
+
+    Player.prototype.takeDamage = function(dmg) {
+        if (this.isBlocking) {
+            // Parry/Block Logic
+            this.hp -= dmg * 0.2; 
+            return;
+        }
+        const mult = this.isMorphing ? 2 : 1; // Vulnerable during morph
+        this.hp -= dmg * mult * 0.1; 
+        if (this.hp <= 0) {
+            alert("YOU DIED! Game Reset.");
+            location.reload();
+        }
+    };
+
+    function spawnWave() {
+        for (let i = 0; i < 3 + waveLevel; i++) {
+            const x = Math.random() > 0.5 ? -50 : canvas.width + 50;
+            const y = Math.random() * canvas.height;
+            enemies.push(new Enemy(x, y, waveLevel));
+        }
+        waveLevel++;
+    }
+
+    function updateFormUI() {
+        formListDiv.innerHTML = '';
+        player.forms.forEach((form, i) => {
+            const slot = document.createElement('div');
+            slot.className = `form-slot ${i === player.currentFormIndex ? 'active' : ''}`;
+            slot.style.backgroundColor = form.color;
+            slot.innerHTML = `<span>${i+1}</span>`;
+            slot.onclick = () => player.morphTo(i);
+            formListDiv.appendChild(slot);
+        });
+    }
+
+    function loop() {
+        ctx.clearRect(0, 0, canvas.width, canvas.height);
+
+        // 1. Update Player
+        player.update();
+        if (KEYS['Space']) player.attack(enemies);
+        player.draw();
+
+        // 2. Update Enemies
+        enemies.forEach((en, index) => {
+            en.update(player);
+            en.draw();
+            if (en.hp <= 0) {
+                essences.push(new Essence(en.x, en.y, en.stats));
+                enemies.splice(index, 1);
+            }
+        });
+
+        // 3. Update Essences
+        essences.forEach((es, index) => {
+            es.draw();
+            if (Math.hypot(player.x - es.x, player.y - es.y) < player.stats.radius + es.radius) {
+                player.forms.push(es.stats);
+                essences.splice(index, 1);
+                updateFormUI();
+            }
+        });
+
+        // 4. Repopulate
+        if (enemies.length === 0) spawnWave();
+
+        // UI
+        hpDisplay.innerText = Math.ceil(player.hp);
+
+        requestAnimationFrame(loop);
+    }
+
+    // Start
+    spawnWave();
+    updateFormUI();
+    loop();
+
+</script>
+</body>
+</html>
