@@ -12,6 +12,8 @@ const ui = {
   killsLabel: document.getElementById("killsLabel"),
   hpFill: document.getElementById("hpFill"),
   hpText: document.getElementById("hpText"),
+  energyFill: document.getElementById("energyFill"),
+  energyText: document.getElementById("energyText"),
   essenceName: document.getElementById("essenceName"),
   essenceTags: document.getElementById("essenceTags"),
   specialName: document.getElementById("specialName"),
@@ -21,6 +23,8 @@ const ui = {
   log: document.getElementById("log"),
   deathOverlay: document.getElementById("deathOverlay"),
   banner: document.getElementById("messageBanner"),
+  mobileControls: document.getElementById("mobileControls"),
+  restartButton: document.getElementById("restartButton"),
 };
 
 const statFields = {
@@ -48,9 +52,12 @@ const statFields = {
 
 const TAU = Math.PI * 2;
 const STAT_KEYS = ["strength", "agility", "mobility", "jump", "guard"];
-const WORLD = { width: 2400, height: 1600 };
+const WORLD = { left: 0, top: 0, width: 2400, height: 1600, right: 2400, bottom: 1600 };
 const EVENT_CAP = 7;
 const MAX_STAT = 12;
+const WORLD_EXPAND_MARGIN = 140;
+const WORLD_EXPAND_CHUNK = 760;
+const MAX_PICKUPS = 4;
 
 const OBSTACLES = [
   { x: 520, y: 430, r: 72, hue: "#233449" },
@@ -186,9 +193,14 @@ const MUTATIONS = [
 
 const input = {
   keys: new Set(),
+  touchDirections: new Set(),
   attackQueued: false,
+  attackHeld: false,
   evadeQueued: false,
   blockHeld: false,
+  sprintHeld: false,
+  touchBlockHeld: false,
+  touchSprintHeld: false,
   mouse: {
     x: 0,
     y: 0,
@@ -251,6 +263,83 @@ function normalize(x, y) {
   return { x: x / len, y: y / len };
 }
 
+function syncWorldBounds() {
+  WORLD.width = WORLD.right - WORLD.left;
+  WORLD.height = WORLD.bottom - WORLD.top;
+}
+
+function resetWorldBounds() {
+  WORLD.left = 0;
+  WORLD.top = 0;
+  WORLD.right = 2400;
+  WORLD.bottom = 1600;
+  syncWorldBounds();
+}
+
+function randomDropDelay() {
+  return rand(30, 120);
+}
+
+function spendEnergy(entity, fraction) {
+  const cost = entity.maxEnergy * fraction;
+  if (entity.energy + 0.001 < cost) {
+    return false;
+  }
+  entity.energy = Math.max(0, entity.energy - cost);
+  return true;
+}
+
+function getAllLivingEntities() {
+  if (!game) {
+    return [];
+  }
+  return [game.player, ...game.enemies].filter((entity) => entity && !entity.dead);
+}
+
+function getCombatTargets(attacker) {
+  return getAllLivingEntities().filter((entity) => entity !== attacker);
+}
+
+function findNearestTarget(entity) {
+  let best = null;
+  let bestDistance = Infinity;
+
+  for (const candidate of getCombatTargets(entity)) {
+    const distance = magnitude(candidate.x - entity.x, candidate.y - entity.y);
+    if (distance < bestDistance) {
+      best = candidate;
+      bestDistance = distance;
+    }
+  }
+
+  return { target: best, distance: bestDistance };
+}
+
+function expandWorldAround(entity) {
+  let expanded = false;
+
+  if (entity.x > WORLD.right - WORLD_EXPAND_MARGIN) {
+    WORLD.right += WORLD_EXPAND_CHUNK;
+    expanded = true;
+  }
+  if (entity.x < WORLD.left + WORLD_EXPAND_MARGIN) {
+    WORLD.left -= WORLD_EXPAND_CHUNK;
+    expanded = true;
+  }
+  if (entity.y > WORLD.bottom - WORLD_EXPAND_MARGIN) {
+    WORLD.bottom += WORLD_EXPAND_CHUNK;
+    expanded = true;
+  }
+  if (entity.y < WORLD.top + WORLD_EXPAND_MARGIN) {
+    WORLD.top -= WORLD_EXPAND_CHUNK;
+    expanded = true;
+  }
+
+  if (expanded) {
+    syncWorldBounds();
+  }
+}
+
 function cloneEssence(essence) {
   return {
     ...essence,
@@ -306,6 +395,9 @@ function deriveCombat(essence) {
     evadeCooldown: Math.max(0.46, 1.55 - stats.agility * 0.07),
     size: 16 + stats.guard * 0.7 + stats.strength * 0.55,
     blockMoveMultiplier: 0.34 + stats.agility * 0.04,
+    maxEnergy: (76 + stats.agility * 8 + stats.mobility * 7 + stats.guard * 4) * (0.92 + scale * 0.08),
+    energyRegen: (9 + stats.agility * 1.1 + stats.mobility * 0.95 + stats.guard * 0.45) * (0.94 + scale * 0.05),
+    sprintMultiplier: 1.38 + stats.mobility * 0.015,
   };
 
   switch (essence.special) {
@@ -401,6 +493,9 @@ function createEntity(team, essence, x, y) {
     moveIntent: { x: 0, y: 0 },
     hitFlash: 0,
     aiStrafeDir: Math.random() > 0.5 ? 1 : -1,
+    energy: 1,
+    maxEnergy: 1,
+    sprinting: false,
     dead: false,
     tags: essence.tags ? [...essence.tags] : [],
   };
@@ -413,11 +508,14 @@ function createEntity(team, essence, x, y) {
 
 function applyEssence(entity, essence, refill) {
   const ratio = entity.maxHp > 0 ? entity.hp / entity.maxHp : 1;
+  const energyRatio = entity.maxEnergy > 0 ? entity.energy / entity.maxEnergy : 1;
   entity.essence = cloneEssence(essence);
   entity.stats = deriveCombat(entity.essence);
   entity.radius = entity.stats.size;
   entity.maxHp = entity.stats.maxHp;
+  entity.maxEnergy = entity.stats.maxEnergy;
   entity.hp = refill ? entity.maxHp : Math.max(1, entity.maxHp * ratio);
+  entity.energy = refill ? entity.maxEnergy : clamp(0, entity.maxEnergy * energyRatio, entity.maxEnergy);
 }
 
 function getThreatLevel() {
@@ -426,13 +524,13 @@ function getThreatLevel() {
 }
 
 function randomSpawnPoint() {
-  const anchor = game.player || { x: WORLD.width / 2, y: WORLD.height / 2 };
+  const anchor = game.player || { x: WORLD.left + WORLD.width / 2, y: WORLD.top + WORLD.height / 2 };
 
   for (let attempts = 0; attempts < 80; attempts += 1) {
     const angle = rand(0, TAU);
     const distance = rand(360, 760);
-    const x = clamp(80, anchor.x + Math.cos(angle) * distance, WORLD.width - 80);
-    const y = clamp(80, anchor.y + Math.sin(angle) * distance, WORLD.height - 80);
+    const x = clamp(WORLD.left + 80, anchor.x + Math.cos(angle) * distance, WORLD.right - 80);
+    const y = clamp(WORLD.top + 80, anchor.y + Math.sin(angle) * distance, WORLD.bottom - 80);
 
     let valid = true;
     for (const obstacle of OBSTACLES) {
@@ -453,7 +551,136 @@ function randomSpawnPoint() {
     return { x, y };
   }
 
-  return { x: rand(120, WORLD.width - 120), y: rand(120, WORLD.height - 120) };
+  return {
+    x: rand(WORLD.left + 120, WORLD.right - 120),
+    y: rand(WORLD.top + 120, WORLD.bottom - 120),
+  };
+}
+
+function randomPickupType() {
+  const roll = Math.random();
+  if (roll < 0.38) {
+    return "life";
+  }
+  if (roll < 0.76) {
+    return "energy";
+  }
+  return "both";
+}
+
+function findPickupSpawnPoint() {
+  for (let attempts = 0; attempts < 140; attempts += 1) {
+    const x = rand(WORLD.left + 150, WORLD.right - 150);
+    const y = rand(WORLD.top + 150, WORLD.bottom - 150);
+
+    if (magnitude(x - game.player.x, y - game.player.y) < 250) {
+      continue;
+    }
+
+    let blocked = false;
+    for (const pickup of game.pickups) {
+      if (magnitude(x - pickup.x, y - pickup.y) < 240) {
+        blocked = true;
+        break;
+      }
+    }
+    if (blocked) {
+      continue;
+    }
+
+    for (const obstacle of OBSTACLES) {
+      if (magnitude(x - obstacle.x, y - obstacle.y) < obstacle.r + 72) {
+        blocked = true;
+        break;
+      }
+    }
+    if (blocked) {
+      continue;
+    }
+
+    return { x, y };
+  }
+
+  return null;
+}
+
+function spawnPickup() {
+  if (game.pickups.length >= MAX_PICKUPS) {
+    return false;
+  }
+
+  const point = findPickupSpawnPoint();
+  if (!point) {
+    return false;
+  }
+
+  const type = randomPickupType();
+  game.pickups.push({
+    id: `pickup-${Math.random().toString(36).slice(2, 9)}`,
+    type,
+    x: point.x,
+    y: point.y,
+    radius: 16,
+    pulse: rand(0, TAU),
+  });
+
+  const names = {
+    life: "life fragment",
+    energy: "energy shard",
+    both: "vitality core",
+  };
+  addLog(`A ${names[type]} drops into the field.`);
+  return true;
+}
+
+function collectPickup(entity, pickup) {
+  let healed = 0;
+  let restored = 0;
+
+  if (pickup.type === "life" || pickup.type === "both") {
+    const hpGain = entity.maxHp * (pickup.type === "both" ? 0.24 : 0.36);
+    healed = Math.min(entity.maxHp - entity.hp, hpGain);
+    entity.hp += healed;
+  }
+  if (pickup.type === "energy" || pickup.type === "both") {
+    const energyGain = entity.maxEnergy * (pickup.type === "both" ? 0.38 : 0.58);
+    restored = Math.min(entity.maxEnergy - entity.energy, energyGain);
+    entity.energy += restored;
+  }
+
+  if (healed <= 0 && restored <= 0) {
+    return false;
+  }
+
+  const color = pickup.type === "life" ? "#ffb8a6" : pickup.type === "energy" ? "#92ecff" : "#c6ffd2";
+  spawnBurst(pickup.x, pickup.y, color, 18, 120, 0.7, 5);
+
+  if (entity === game.player) {
+    const pickupName = pickup.type === "life" ? "life fragment" : pickup.type === "energy" ? "energy shard" : "vitality core";
+    addLog(`You absorbed a ${pickupName}.`);
+  }
+
+  return true;
+}
+
+function updatePickups(dt) {
+  game.nextPickupTimer -= dt;
+  if (game.nextPickupTimer <= 0) {
+    spawnPickup();
+    game.nextPickupTimer = randomDropDelay();
+  }
+
+  for (const pickup of game.pickups) {
+    pickup.pulse += dt * 2.4;
+  }
+
+  game.pickups = game.pickups.filter((pickup) => {
+    const distance = magnitude(pickup.x - game.player.x, pickup.y - game.player.y);
+    if (distance < pickup.radius + game.player.radius + 6) {
+      return !collectPickup(game.player, pickup);
+    }
+    return true;
+  });
 }
 
 function showBanner(text, duration = 2.2) {
@@ -501,8 +728,9 @@ function spawnText(x, y, text, color) {
 }
 
 function startRun() {
+  resetWorldBounds();
   const base = createBaseEssence();
-  const player = createEntity("player", base, WORLD.width / 2, WORLD.height / 2);
+  const player = createEntity("player", base, WORLD.left + WORLD.width / 2, WORLD.top + WORLD.height / 2);
 
   game = {
     viewWidth: 1280,
@@ -515,10 +743,12 @@ function startRun() {
     currentFormIndex: 0,
     player,
     enemies: [],
+    pickups: [],
     particles: [],
     logs: [],
     bannerTimer: 0,
     nextWaveTimer: null,
+    nextPickupTimer: randomDropDelay(),
     kills: 0,
     camera: { x: player.x, y: player.y, shake: 0 },
     uiRefresh: 0,
@@ -600,6 +830,18 @@ function getInputVector() {
   if (input.keys.has("KeyD")) {
     x += 1;
   }
+  if (input.touchDirections.has("up")) {
+    y -= 1;
+  }
+  if (input.touchDirections.has("down")) {
+    y += 1;
+  }
+  if (input.touchDirections.has("left")) {
+    x -= 1;
+  }
+  if (input.touchDirections.has("right")) {
+    x += 1;
+  }
 
   return normalize(x, y);
 }
@@ -622,6 +864,7 @@ function startAttack(entity) {
   }
 
   const cooldown = entity.stats.attackCooldown / currentFrenzyFactor(entity);
+  entity.sprinting = false;
   entity.blocking = false;
   entity.blockTimer = 0;
   entity.parryTimer = 0;
@@ -639,6 +882,7 @@ function startBlock(entity, aiHold = 0) {
     return false;
   }
 
+  entity.sprinting = false;
   entity.blocking = true;
   entity.blockTimer = aiHold;
   entity.parryTimer = entity.stats.parryWindow;
@@ -656,6 +900,13 @@ function startEvade(entity, dirX, dirY) {
     return false;
   }
 
+  if (!spendEnergy(entity, 0.5)) {
+    if (entity === game.player) {
+      spawnText(entity.x, entity.y - entity.radius - 10, "LOW ENERGY", "#92ecff");
+    }
+    return false;
+  }
+
   const direction = normalize(dirX, dirY);
   if (!direction.x && !direction.y) {
     direction.x = Math.cos(entity.facing);
@@ -666,6 +917,7 @@ function startEvade(entity, dirX, dirY) {
   entity.blockTimer = 0;
   entity.parryTimer = 0;
   entity.attackState = null;
+  entity.sprinting = false;
   entity.evadeDir = direction;
   entity.evadeTimer = entity.stats.evadeDuration;
   entity.evadeCooldown = entity.stats.evadeCooldown;
@@ -682,7 +934,7 @@ function startEvade(entity, dirX, dirY) {
 }
 
 function resolveAttack(attacker) {
-  const targets = attacker.team === "player" ? game.enemies : [game.player];
+  const targets = getCombatTargets(attacker);
   let connected = false;
 
   for (const target of targets) {
@@ -747,16 +999,35 @@ function applyHit(attacker, target, attackAngle) {
 
   if (guarding) {
     if (target.parryTimer > 0) {
+      if (!spendEnergy(target, 0.2)) {
+        target.parryTimer = 0;
+        if (target === game.player) {
+          spawnText(target.x, target.y - target.radius - 10, "LOW ENERGY", "#92ecff");
+        }
+      } else {
+        stopBlock(target);
+        attacker.stunTimer = 0.8;
+        attacker.attackState = null;
+        attacker.attackCooldown = Math.max(attacker.attackCooldown, 0.35);
+        attacker.vx -= Math.cos(attackAngle) * 180;
+        attacker.vy -= Math.sin(attackAngle) * 180;
+        spawnText(target.x, target.y - target.radius - 10, "PARRY", "#fff0b2");
+        spawnBurst(target.x, target.y, "#fff0b2", 14, 150, 0.55, 5);
+        dealDamage(attacker, Math.max(8, damage * 0.24), target, "#ffe78d");
+        game.camera.shake = Math.max(game.camera.shake, 5);
+        return;
+      }
+    }
+
+    const blockFraction = 0.3 + attacker.essence.stats.strength / 100;
+    if (!spendEnergy(target, blockFraction)) {
       stopBlock(target);
-      attacker.stunTimer = 0.8;
-      attacker.attackState = null;
-      attacker.attackCooldown = Math.max(attacker.attackCooldown, 0.35);
-      attacker.vx -= Math.cos(attackAngle) * 180;
-      attacker.vy -= Math.sin(attackAngle) * 180;
-      spawnText(target.x, target.y - target.radius - 10, "PARRY", "#fff0b2");
-      spawnBurst(target.x, target.y, "#fff0b2", 14, 150, 0.55, 5);
-      dealDamage(attacker, Math.max(8, damage * 0.24), target, "#ffe78d");
-      game.camera.shake = Math.max(game.camera.shake, 5);
+      spawnText(target.x, target.y - target.radius - 10, "GUARD BREAK", "#ffd3b2");
+      damage *= 1.1;
+      dealDamage(target, damage, attacker, "#ffb39e");
+      target.vx += Math.cos(attackAngle) * attacker.stats.knockback * 1.15;
+      target.vy += Math.sin(attackAngle) * attacker.stats.knockback * 1.15;
+      target.stunTimer = Math.max(target.stunTimer, 0.32);
       return;
     }
 
@@ -796,8 +1067,8 @@ function handleDeath(target, source) {
   spawnBurst(target.x, target.y, target.essence.palette.body, 18, 180, 0.8, 7);
 
   if (target.team === "enemy") {
-    game.kills += 1;
     if (source === game.player) {
+      game.kills += 1;
       unlockEssence(target.essence);
     }
     game.enemies = game.enemies.filter((enemy) => enemy !== target);
@@ -813,9 +1084,16 @@ function handleDeath(target, source) {
 function updatePlayer(dt) {
   const player = game.player;
   const move = getInputVector();
-  const queuedAttack = input.attackQueued || input.mouse.left;
+  const queuedAttack = input.attackQueued || input.mouse.left || input.attackHeld;
   const queuedEvade = input.evadeQueued;
   player.moveIntent = move;
+  player.sprinting =
+    input.sprintHeld &&
+    player.morphTimer <= 0 &&
+    player.evadeTimer <= 0 &&
+    !player.blocking &&
+    !player.attackState &&
+    !!(move.x || move.y);
 
   updateMouseWorld();
   const aimX = input.mouse.inside ? input.mouse.worldX - player.x : move.x;
@@ -851,23 +1129,30 @@ function updatePlayer(dt) {
 }
 
 function updateEnemy(enemy, dt) {
-  const player = game.player;
-  const dx = player.x - enemy.x;
-  const dy = player.y - enemy.y;
-  const dist = Math.hypot(dx, dy);
+  const { target, distance: dist } = findNearestTarget(enemy);
+  if (!target) {
+    enemy.moveIntent.x = 0;
+    enemy.moveIntent.y = 0;
+    enemy.sprinting = false;
+    return;
+  }
+
+  const dx = target.x - enemy.x;
+  const dy = target.y - enemy.y;
   const dir = normalize(dx, dy);
   const right = { x: -dir.y, y: dir.x };
-  const desiredRange = enemy.radius + player.radius + enemy.stats.range * 0.72;
+  const desiredRange = enemy.radius + target.radius + enemy.stats.range * 0.72;
 
   enemy.desiredFacing = Math.atan2(dy, dx);
   enemy.moveIntent.x = 0;
   enemy.moveIntent.y = 0;
+  enemy.sprinting = false;
 
   if (enemy.stunTimer <= 0 && enemy.morphTimer <= 0 && enemy.evadeTimer <= 0) {
     if (
-      player.attackState &&
-      player.attackState.windup > 0 &&
-      dist < player.stats.range + player.radius + enemy.radius + 64 &&
+      target.attackState &&
+      target.attackState.windup > 0 &&
+      dist < target.stats.range + target.radius + enemy.radius + 64 &&
       enemy.reactionCooldown <= 0
     ) {
       const roll = Math.random();
@@ -939,6 +1224,17 @@ function tickEntity(entity, dt) {
     }
   }
 
+  const energyRegenFactor = entity.blocking
+    ? 0.16
+    : entity.attackState
+      ? 0.42
+      : entity.morphTimer > 0
+        ? 0.35
+        : entity.sprinting
+          ? 0.52
+          : 1;
+  entity.energy = clamp(0, entity.energy + entity.stats.energyRegen * energyRegenFactor * dt, entity.maxEnergy);
+
   if (entity.morphTimer > 0) {
     entity.morphTimer -= dt;
     if (Math.random() < 10 * dt) {
@@ -999,7 +1295,8 @@ function tickEntity(entity, dt) {
             ? 0
             : currentFrenzyFactor(entity);
 
-    const targetSpeed = entity.stats.moveSpeed * moveScale;
+    const sprintMultiplier = entity.sprinting ? entity.stats.sprintMultiplier : 1;
+    const targetSpeed = entity.stats.moveSpeed * moveScale * sprintMultiplier;
     entity.vx = lerp(entity.vx, entity.moveIntent.x * targetSpeed, dt * 12);
     entity.vy = lerp(entity.vy, entity.moveIntent.y * targetSpeed, dt * 12);
   }
@@ -1012,8 +1309,12 @@ function tickEntity(entity, dt) {
 }
 
 function collideWithArena(entity) {
-  entity.x = clamp(entity.radius + 18, entity.x, WORLD.width - entity.radius - 18);
-  entity.y = clamp(entity.radius + 18, entity.y, WORLD.height - entity.radius - 18);
+  if (entity === game.player) {
+    expandWorldAround(entity);
+  }
+
+  entity.x = clamp(WORLD.left + entity.radius + 18, entity.x, WORLD.right - entity.radius - 18);
+  entity.y = clamp(WORLD.top + entity.radius + 18, entity.y, WORLD.bottom - entity.radius - 18);
 
   for (const obstacle of OBSTACLES) {
     const dx = entity.x - obstacle.x;
@@ -1074,8 +1375,12 @@ function updateMouseWorld() {
 function updateCamera(dt) {
   const shake = game.camera.shake;
   game.camera.shake = Math.max(0, game.camera.shake - dt * 18);
-  const targetX = clamp(game.viewWidth / 2, game.player.x, WORLD.width - game.viewWidth / 2);
-  const targetY = clamp(game.viewHeight / 2, game.player.y, WORLD.height - game.viewHeight / 2);
+  const minX = WORLD.left + game.viewWidth / 2;
+  const maxX = WORLD.right - game.viewWidth / 2;
+  const minY = WORLD.top + game.viewHeight / 2;
+  const maxY = WORLD.bottom - game.viewHeight / 2;
+  const targetX = clamp(minX, game.player.x, maxX);
+  const targetY = clamp(minY, game.player.y, maxY);
   game.camera.x = lerp(game.camera.x, targetX, dt * 4.5);
   game.camera.y = lerp(game.camera.y, targetY, dt * 4.5);
 
@@ -1110,6 +1415,7 @@ function updateGame(dt) {
   }
 
   separateEntities();
+  updatePickups(dt);
   updateParticles(dt);
   updateCamera(dt);
 
@@ -1139,6 +1445,7 @@ function refreshHud() {
   const player = game.player;
   const essence = player.essence;
   const hpPercent = clamp(0, player.hp / player.maxHp, 1) * 100;
+  const energyPercent = clamp(0, player.energy / player.maxEnergy, 1) * 100;
 
   ui.waveLabel.textContent = String(game.wave);
   ui.enemiesLabel.textContent = String(game.enemies.length);
@@ -1147,6 +1454,8 @@ function refreshHud() {
   ui.killsLabel.textContent = String(game.kills);
   ui.hpFill.style.width = `${hpPercent}%`;
   ui.hpText.textContent = `${Math.max(0, Math.round(player.hp))} / ${Math.round(player.maxHp)}`;
+  ui.energyFill.style.width = `${energyPercent}%`;
+  ui.energyText.textContent = `${Math.round(player.energy)} / ${Math.round(player.maxEnergy)} energy`;
   ui.essenceName.textContent = essence.name;
   ui.essenceTags.textContent = `${essence.species} / ${essence.tags.join(" / ")}`;
   ui.specialName.textContent = essence.specialName;
@@ -1179,27 +1488,29 @@ function refreshHud() {
 
 function drawBackground() {
   ctx.fillStyle = "#08111d";
-  ctx.fillRect(0, 0, WORLD.width, WORLD.height);
+  ctx.fillRect(WORLD.left, WORLD.top, WORLD.width, WORLD.height);
 
-  const gradient = ctx.createRadialGradient(WORLD.width * 0.5, WORLD.height * 0.46, 180, WORLD.width * 0.5, WORLD.height * 0.5, 1200);
+  const centerX = WORLD.left + WORLD.width * 0.5;
+  const centerY = WORLD.top + WORLD.height * 0.5;
+  const gradient = ctx.createRadialGradient(centerX, WORLD.top + WORLD.height * 0.46, 180, centerX, centerY, 1200);
   gradient.addColorStop(0, "rgba(62, 134, 201, 0.15)");
   gradient.addColorStop(0.5, "rgba(22, 42, 78, 0.08)");
   gradient.addColorStop(1, "rgba(6, 10, 19, 0)");
   ctx.fillStyle = gradient;
-  ctx.fillRect(0, 0, WORLD.width, WORLD.height);
+  ctx.fillRect(WORLD.left, WORLD.top, WORLD.width, WORLD.height);
 
   ctx.strokeStyle = "rgba(168, 214, 255, 0.08)";
   ctx.lineWidth = 1;
-  for (let x = 0; x <= WORLD.width; x += 120) {
+  for (let x = Math.floor(WORLD.left / 120) * 120; x <= WORLD.right; x += 120) {
     ctx.beginPath();
-    ctx.moveTo(x, 0);
-    ctx.lineTo(x, WORLD.height);
+    ctx.moveTo(x, WORLD.top);
+    ctx.lineTo(x, WORLD.bottom);
     ctx.stroke();
   }
-  for (let y = 0; y <= WORLD.height; y += 120) {
+  for (let y = Math.floor(WORLD.top / 120) * 120; y <= WORLD.bottom; y += 120) {
     ctx.beginPath();
-    ctx.moveTo(0, y);
-    ctx.lineTo(WORLD.width, y);
+    ctx.moveTo(WORLD.left, y);
+    ctx.lineTo(WORLD.right, y);
     ctx.stroke();
   }
 
@@ -1212,6 +1523,77 @@ function drawBackground() {
     ctx.beginPath();
     ctx.arc(obstacle.x - obstacle.r * 0.16, obstacle.y - obstacle.r * 0.22, obstacle.r * 0.66, 0, TAU);
     ctx.fill();
+  }
+}
+
+function drawPickups() {
+  for (const pickup of game.pickups) {
+    const bob = Math.sin(pickup.pulse) * 4;
+    const y = pickup.y + bob;
+
+    ctx.save();
+    ctx.translate(pickup.x, y);
+
+    const palette =
+      pickup.type === "life"
+        ? { outer: "#ff8e80", inner: "#ffe1c8" }
+        : pickup.type === "energy"
+          ? { outer: "#6fd5ff", inner: "#d8fcff" }
+          : { outer: "#90f0bf", inner: "#f0ffd8" };
+
+    ctx.fillStyle = "rgba(0, 0, 0, 0.24)";
+    ctx.beginPath();
+    ctx.ellipse(0, 18, 14, 8, 0, 0, TAU);
+    ctx.fill();
+
+    ctx.fillStyle = palette.outer;
+    ctx.strokeStyle = palette.inner;
+    ctx.lineWidth = 2;
+
+    if (pickup.type === "life") {
+      ctx.beginPath();
+      ctx.moveTo(0, -12);
+      ctx.bezierCurveTo(18, -28, 30, -3, 0, 18);
+      ctx.bezierCurveTo(-30, -3, -18, -28, 0, -12);
+      ctx.closePath();
+      ctx.fill();
+      ctx.stroke();
+    } else if (pickup.type === "energy") {
+      ctx.beginPath();
+      ctx.moveTo(0, -18);
+      ctx.lineTo(12, -2);
+      ctx.lineTo(2, -2);
+      ctx.lineTo(14, 18);
+      ctx.lineTo(-12, 2);
+      ctx.lineTo(-2, 2);
+      ctx.closePath();
+      ctx.fill();
+      ctx.stroke();
+    } else {
+      ctx.beginPath();
+      for (let i = 0; i < 6; i += 1) {
+        const angle = -Math.PI / 2 + (i / 6) * TAU;
+        const px = Math.cos(angle) * 16;
+        const py = Math.sin(angle) * 16;
+        if (i === 0) {
+          ctx.moveTo(px, py);
+        } else {
+          ctx.lineTo(px, py);
+        }
+      }
+      ctx.closePath();
+      ctx.fill();
+      ctx.stroke();
+      ctx.strokeStyle = "rgba(255, 255, 255, 0.8)";
+      ctx.beginPath();
+      ctx.moveTo(-6, 0);
+      ctx.lineTo(6, 0);
+      ctx.moveTo(0, -6);
+      ctx.lineTo(0, 6);
+      ctx.stroke();
+    }
+
+    ctx.restore();
   }
 }
 
@@ -1259,6 +1641,11 @@ function drawHealthBar(entity) {
   ctx.fillRect(x, y, width, height);
   ctx.fillStyle = entity.team === "player" ? "#ffd083" : "#ff756b";
   ctx.fillRect(x, y, width * clamp(0, entity.hp / entity.maxHp, 1), height);
+
+  ctx.fillStyle = "rgba(0, 0, 0, 0.35)";
+  ctx.fillRect(x, y + height + 2, width, 4);
+  ctx.fillStyle = "#7fe1f5";
+  ctx.fillRect(x, y + height + 2, width * clamp(0, entity.energy / entity.maxEnergy, 1), 4);
 }
 
 function drawEntity(entity) {
@@ -1444,6 +1831,7 @@ function render() {
   ctx.translate(cameraX, cameraY);
 
   drawBackground();
+  drawPickups();
   const drawables = [game.player, ...game.enemies].sort((a, b) => a.y - b.y);
   for (const entity of drawables) {
     drawEntity(entity);
@@ -1501,12 +1889,94 @@ function handleKeyDown(event) {
     startRun();
   }
 
-  input.blockHeld = input.keys.has("ShiftLeft") || input.keys.has("ShiftRight") || input.mouse.right;
+  syncHeldActions();
 }
 
 function handleKeyUp(event) {
   input.keys.delete(event.code);
-  input.blockHeld = input.keys.has("ShiftLeft") || input.keys.has("ShiftRight") || input.mouse.right;
+  syncHeldActions();
+}
+
+function syncHeldActions() {
+  input.blockHeld =
+    input.keys.has("ShiftLeft") ||
+    input.keys.has("ShiftRight") ||
+    input.mouse.right ||
+    input.touchBlockHeld;
+  input.sprintHeld =
+    input.keys.has("KeyC") ||
+    input.keys.has("ControlLeft") ||
+    input.keys.has("ControlRight") ||
+    input.touchSprintHeld;
+}
+
+function updateMobileMode() {
+  const mobile = window.matchMedia("(pointer: coarse)").matches || window.innerWidth <= 820;
+  document.body.classList.toggle("mobile-mode", mobile);
+  ui.mobileControls.classList.toggle("hidden", !mobile);
+}
+
+function bindTouchButton(button) {
+  const action = button.dataset.touch;
+  if (!action) {
+    return;
+  }
+
+  const release = () => {
+    button.classList.remove("active");
+    if (action === "move-up") {
+      input.touchDirections.delete("up");
+    } else if (action === "move-down") {
+      input.touchDirections.delete("down");
+    } else if (action === "move-left") {
+      input.touchDirections.delete("left");
+    } else if (action === "move-right") {
+      input.touchDirections.delete("right");
+    } else if (action === "attack") {
+      input.attackHeld = false;
+    } else if (action === "block") {
+      input.touchBlockHeld = false;
+      syncHeldActions();
+    } else if (action === "sprint") {
+      input.touchSprintHeld = false;
+      syncHeldActions();
+    }
+  };
+
+  button.addEventListener("pointerdown", (event) => {
+    event.preventDefault();
+    button.classList.add("active");
+    button.setPointerCapture(event.pointerId);
+
+    if (action === "move-up") {
+      input.touchDirections.add("up");
+    } else if (action === "move-down") {
+      input.touchDirections.add("down");
+    } else if (action === "move-left") {
+      input.touchDirections.add("left");
+    } else if (action === "move-right") {
+      input.touchDirections.add("right");
+    } else if (action === "attack") {
+      input.attackHeld = true;
+      input.attackQueued = true;
+    } else if (action === "block") {
+      input.touchBlockHeld = true;
+      syncHeldActions();
+    } else if (action === "evade") {
+      input.evadeQueued = true;
+    } else if (action === "sprint") {
+      input.touchSprintHeld = true;
+      syncHeldActions();
+    } else if (action === "morph-prev") {
+      queueMorph(-1);
+    } else if (action === "morph-next") {
+      queueMorph(1);
+    }
+  });
+
+  button.addEventListener("pointerup", release);
+  button.addEventListener("pointercancel", release);
+  button.addEventListener("lostpointercapture", release);
 }
 
 function installInput() {
@@ -1515,9 +1985,15 @@ function installInput() {
 
   window.addEventListener("blur", () => {
     input.keys.clear();
+    input.touchDirections.clear();
+    input.attackQueued = false;
+    input.attackHeld = false;
+    input.evadeQueued = false;
     input.mouse.left = false;
     input.mouse.right = false;
-    input.blockHeld = false;
+    input.touchBlockHeld = false;
+    input.touchSprintHeld = false;
+    syncHeldActions();
   });
 
   canvas.addEventListener("mousemove", (event) => {
@@ -1542,17 +2018,17 @@ function installInput() {
     }
     if (event.button === 2) {
       input.mouse.right = true;
-      input.blockHeld = true;
+      syncHeldActions();
     }
   });
 
-  canvas.addEventListener("mouseup", (event) => {
+  window.addEventListener("mouseup", (event) => {
     if (event.button === 0) {
       input.mouse.left = false;
     }
     if (event.button === 2) {
       input.mouse.right = false;
-      input.blockHeld = input.keys.has("ShiftLeft") || input.keys.has("ShiftRight");
+      syncHeldActions();
     }
   });
 
@@ -1566,7 +2042,18 @@ function installInput() {
     { passive: false }
   );
 
-  window.addEventListener("resize", resizeCanvas);
+  for (const button of ui.mobileControls.querySelectorAll("[data-touch]")) {
+    bindTouchButton(button);
+  }
+
+  ui.restartButton.addEventListener("click", () => startRun());
+
+  window.addEventListener("resize", () => {
+    resizeCanvas();
+    updateMobileMode();
+  });
+
+  updateMobileMode();
 }
 
 installInput();

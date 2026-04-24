@@ -23,9 +23,29 @@
           <canvas id="gameCanvas" width="1280" height="720"></canvas>
           <div class="overlay hidden" id="deathOverlay">
             <h2>You shattered.</h2>
-            <p>Your collected essences are gone. Press <strong>R</strong> to begin a new run.</p>
+            <p>Your collected essences are gone. Press <strong>R</strong> or use the restart button to begin a new run.</p>
+            <button class="restart-button" id="restartButton" type="button">Restart Run</button>
           </div>
           <div class="banner hidden" id="messageBanner"></div>
+          <div class="mobile-controls hidden" id="mobileControls">
+            <div class="touch-cluster">
+              <div class="touch-pad">
+                <button type="button" class="touch-btn" data-touch="move-up" aria-label="Move Up">Up</button>
+                <button type="button" class="touch-btn" data-touch="move-left" aria-label="Move Left">Left</button>
+                <button type="button" class="touch-btn touch-btn-center" aria-hidden="true" tabindex="-1">+</button>
+                <button type="button" class="touch-btn" data-touch="move-right" aria-label="Move Right">Right</button>
+                <button type="button" class="touch-btn" data-touch="move-down" aria-label="Move Down">Down</button>
+              </div>
+            </div>
+            <div class="touch-actions">
+              <button type="button" class="touch-btn" data-touch="morph-prev">Morph -</button>
+              <button type="button" class="touch-btn touch-btn-primary" data-touch="attack">Attack</button>
+              <button type="button" class="touch-btn" data-touch="block">Guard</button>
+              <button type="button" class="touch-btn" data-touch="evade">Evade</button>
+              <button type="button" class="touch-btn" data-touch="sprint">Sprint</button>
+              <button type="button" class="touch-btn" data-touch="morph-next">Morph +</button>
+            </div>
+          </div>
         </div>
 
         <div class="legend-strip">
@@ -64,6 +84,13 @@
               <div class="health-fill" id="hpFill"></div>
             </div>
             <div class="health-text" id="hpText">100 / 100</div>
+          </div>
+
+          <div class="energy-shell">
+            <div class="energy-bar">
+              <div class="energy-fill" id="energyFill"></div>
+            </div>
+            <div class="energy-text" id="energyText">100 / 100 energy</div>
           </div>
 
           <h3 class="essence-name" id="essenceName">Runebound Drifter</h3>
@@ -117,6 +144,7 @@
             <li><strong>Attack:</strong> Left click or F</li>
             <li><strong>Block / Parry:</strong> Right click or Shift</li>
             <li><strong>Evade:</strong> Space</li>
+            <li><strong>Sprint:</strong> C or Ctrl</li>
             <li><strong>Restart Run:</strong> R after death</li>
           </ul>
         </section>
